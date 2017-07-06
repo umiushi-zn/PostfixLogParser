@@ -2,17 +2,22 @@
 # for Python 3.4
 # PostfixLogParser
 # Version : 0.0.5a
-# License : GPLv3
+# License : GPLv2
 # (c) umiushi.zn@gmail.com
 # Postfixのログを1行1ログに変換します。
 # 手元の環境では18万行(15000レコードくらい)を約7秒で解析します。
 #
-# 使い方 : python3 PostfixLogParser.py --inputs=/var/logs/maillog.*.gz --outputdir=export  --year=2017 --compress
-# inputs    : 解析対象とするログファイルを指定してください
-# outputdir : 指定したディレクトリに、解析結果が元ファイルの名称に「.txt」付与されて保存されます。
-#             ディレクトリは予め作成しておいてください。
-# year      : ログには年号が記録されていないため年号(西暦)を数字で入れてください
-# compress  : ファイルが圧縮(gzip)されている場合に指定してください。
+# python3 PostfixLogParser.py --inputs=/var/log/maillog*.gz --outputdir=export --compressed=Y --year=2017 --export-type=TSV
+# 
+# - inputs      : 解析対象とするログファイルを指定してください
+# - outputdir   : 指定したディレクトリに、解析結果が元ファイルの名称に「.txt」付与されて保存されます。
+# -               ディレクトリは予め作成しておいてください。
+# - year        : ログには年号が記録されていないため年号(西暦)を数字で入れてください
+# - compressed  : ファイルが圧縮(gzip)されている場合に指定してください。
+# - export-type : TSV or JSON or ORIG
+# -               TSVはカラムの区切りをTabで出力します。
+# -　　　　　　　　　　　　　JSONは行ごとにJSON形式で出力されます。
+# -               ORIGはgrepし易いような形式で出力します。
 import re
 import argparse
 import datetime
@@ -21,6 +26,7 @@ import glob
 import os
 import logging
 import json
+from abc import ABCMeta, abstractmethod
 
 # LOGGING LEVEL
 LOGGING_LEVEL = logging.INFO
@@ -600,7 +606,7 @@ def arg_parse() -> argparse.Namespace:
     コマンドライン引数を解析します。
     :return: コマンドライン引数(argparse.Namespace)
     """
-    ###############################
+
     # コマンドライン引数の取得
     p = argparse.ArgumentParser()
 
@@ -667,10 +673,12 @@ def arg_parse() -> argparse.Namespace:
 
 
 class MaillogWriter:
+    __metaclass__ = ABCMeta
     _cols = ["analyzed", "start", "end", "host", "qid", "from", "org_to", "to",
              "msg_id", "nrcpt", "relay_host", "relay_ip", "relay_port",
              "dsn", "status", "size", "client_host", "client_ip", "proc",
              "delay", "delay_before", "delay_qmgr", "delay_con", "delay_trans", "dur"]
+
 
     def __init__(self):
         self._delimiter = ","
@@ -680,11 +688,15 @@ class MaillogWriter:
     def cols(self):
         return self._cols
 
-    def header(self) -> str:
-        return self._delimiter.join(self._cols)
+    @abstractmethod
+    def header(self):
+        print('Abstract')
+        raise NotImplementedError()
 
-    def dumps(self, m: dict) -> str:
-        return ""
+    @abstractmethod
+    def dumps(self, m: dict):
+        print('Abstract')
+        raise NotImplementedError()
 
 
 class MaillogTSVWriter(MaillogWriter):
@@ -786,6 +798,11 @@ class MaillogOrgWriter(MaillogWriter):
 
 
 def create_writer(txt):
+    """
+    出力オブジェクトの生成
+    :param txt: JSON / TSV / ORIG
+    :return: MaillogWriterを継承したオブジェクト
+    """
     if txt == 'JSON':
         return MaillogJSONWriter()
     elif txt == 'TSV':
@@ -794,8 +811,11 @@ def create_writer(txt):
         return MaillogOrgWriter()
 
 
-# Main Function
 def main():
+    """
+    メインループ
+    :return: void
+    """
     stime = datetime.datetime.now()
 
     # LogFormatの指定
@@ -807,14 +827,12 @@ def main():
     # コマンドライン引数の取得
     args = arg_parse()
 
-    ###############################
-    # メイン処理
     # ファイル名の指定
     inputs = glob.glob(args.inputs)
     for input_fn in inputs:
-        # imlogs = None
-        logging.info(" Analyzing [{0}]".format(input_fn))
+
         # パーサーオブジェクトの指定
+        logging.info(" Analyzing [{0}]".format(input_fn))
         mp = MaillogParser(input_fn)
 
         # 圧縮状態の指定
@@ -833,14 +851,12 @@ def main():
             dt = datetime.datetime.fromtimestamp(os.stat(input_fn).st_ctime)
             mp.year = dt.year
 
-        ###############################
         # ログのパース実行
         try:
             # 標準出力
             ps = datetime.datetime.now()
             logging.info("Start analysis.")
 
-            ###############################
             # パースの実行
             basename, ext = os.path.splitext(os.path.basename(input_fn))
             output_fn = "{0}/{1}{2}.txt".format(args.outputdir, basename, ext)
@@ -897,7 +913,6 @@ def main():
     # 標準出力
     etime = datetime.datetime.now()
     logging.info('=Parse end.=== {0}'.format(etime - stime))
-
 
 
 def support_datetime_default(obj):
