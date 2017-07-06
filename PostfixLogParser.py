@@ -2,7 +2,7 @@
 # for Python 3.4
 # PostfixLogParser
 # Version : 0.0.5a
-# License : GPLv2
+# License : GPLv3
 # (c) umiushi.zn@gmail.com
 # Postfixのログを1行1ログに変換します。
 # 手元の環境では18万行(15000レコードくらい)を約7秒で解析します。
