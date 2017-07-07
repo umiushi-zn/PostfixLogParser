@@ -8,16 +8,16 @@
 # 手元の環境では18万行(15000レコードくらい)を約7秒で解析します。
 #
 # python3 PostfixLogParser.py --inputs=/var/log/maillog*.gz --outputdir=export --compressed=Y --year=2017 --export-type=TSV
-# 
-# - inputs      : 解析対象とするログファイルを指定してください
-# - outputdir   : 指定したディレクトリに、解析結果が元ファイルの名称に「.txt」付与されて保存されます。
-# -               ディレクトリは予め作成しておいてください。
-# - year        : ログには年号が記録されていないため年号(西暦)を数字で入れてください
-# - compressed  : ファイルが圧縮(gzip)されている場合に指定してください。
-# - export-type : TSV or JSON or ORIG
-# -               TSVはカラムの区切りをTabで出力します。
-# -　　　　　　　　　　　　　JSONは行ごとにJSON形式で出力されます。
-# -               ORIGはgrepし易いような形式で出力します。
+#
+#  inputs      : 解析対象とするログファイルを指定してください
+#  outputdir   : 指定したディレクトリに、解析結果が元ファイルの名称に「.txt」付与されて保存されます。
+#                ディレクトリは予め作成しておいてください。
+#  year        : ログには年号が記録されていないため年号(西暦)を数字で入れてください
+#  compressed  : ファイルが圧縮(gzip)されている場合に指定してください。
+#  export-type : TSV or JSON or ORIG
+#                TSVはカラムの区切りをTabで出力します。
+#                JSONは行ごとにJSON形式で出力されます。
+#                ORIGはgrepし易いような形式で出力します。
 import re
 import argparse
 import datetime
@@ -698,6 +698,16 @@ class MaillogWriter:
         print('Abstract')
         raise NotImplementedError()
 
+    @abstractmethod
+    def write_header(self, f):
+        print('Abstract')
+        raise NotImplementedError()
+
+    @abstractmethod
+    def write_line(self, f, m:dict):
+        print('Abstract')
+        raise NotImplementedError()
+
 
 class MaillogTSVWriter(MaillogWriter):
     def __init__(self):
@@ -709,6 +719,10 @@ class MaillogTSVWriter(MaillogWriter):
 
     def header(self) -> str:
         return self._delimiter.join(super().cols)
+
+    def write_header(self, f ):
+        f.write(self.header())
+        f.write("\n")
 
     def dumps(self, m: dict) -> str:
         """
@@ -749,6 +763,10 @@ class MaillogTSVWriter(MaillogWriter):
 
         return self._delimiter.join(tmp)
 
+    def write_line(self, f, m:dict):
+        f.write(self.dumps(m))
+        f.write("\n")
+
 
 class MaillogJSONWriter(MaillogWriter):
     def __init__(self):
@@ -761,6 +779,9 @@ class MaillogJSONWriter(MaillogWriter):
     def header(self) -> str:
         return ""
 
+    def write_header(self, f ):
+        pass
+
     def dumps(self, m: dict) -> str:
         """
 
@@ -768,6 +789,10 @@ class MaillogJSONWriter(MaillogWriter):
         """
 
         return json.dumps(m, default=support_datetime_default)
+
+    def write_line(self, f, m:dict):
+        f.write(self.dumps(m))
+        f.write("\n")
 
 
 class MaillogOrgWriter(MaillogWriter):
@@ -777,6 +802,9 @@ class MaillogOrgWriter(MaillogWriter):
 
     def header(self) -> str:
         return ""
+
+    def write_header(self, f ):
+        pass
 
     def dumps(self, m: dict) -> str:
         fmt = "anlyzd={0}\tstart={1}\tend={2}\thost={3}\tqid={4}\tfrom={5}\torg_to={6}\tto={7}\t" \
@@ -795,6 +823,10 @@ class MaillogOrgWriter(MaillogWriter):
         )
 
         return buf
+
+    def write_line(self, f, m:dict):
+        f.write(self.dumps(m))
+        f.write("\n")
 
 
 def create_writer(txt):
@@ -864,37 +896,16 @@ def main():
                 mtw = create_writer(args.type)
 
                 # ヘッダ書処理
-                header = mtw.header()
-                if header:
-                    f.write(mtw.header())
-                    f.write("\n")
+                mtw.write_header(f)
 
-                line = []
-
-                # 解析が終わったログを順次書き込みバッファへ
+                # 解析が終わったログを書き込み
                 for imlog in mp.parse():
                     logging.debug(imlog)
-                    line.append(mtw.dumps(imlog))
+                    mtw.write_line(f, imlog)
 
-                    # 書き込み用のバッファが溜まったら書き込みを行う
-                    if len(line) > WRITE_BUFFER:
-                        f.write("\n".join(line))
-                        f.write("\n")
-                        line.clear()
-                else:
-                    f.write("\n".join(line))
-                    f.write("\n")
-
-                line.clear()
+                # 解析が終わっていないログを書き込み
                 for imlog in mp.get_noncomplete_maillog():
-                    logging.debug(imlog)
-                    line.append(mtw.dumps(imlog))
-
-                    if len(line) > WRITE_BUFFER:
-                        f.write("\n".join(line))
-                        line.clear()
-                else:
-                    f.write("\n".join(line))
+                    mtw.write_line(f, imlog)
 
             # 標準出力
             pe = datetime.datetime.now()
