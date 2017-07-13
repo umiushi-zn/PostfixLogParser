@@ -7,7 +7,8 @@
 # Postfixのログを1行1ログに変換します。
 # 手元の環境では18万行(15000レコードくらい)を約7秒で解析します。
 #
-# python3 PostfixLogParser.py --inputs=/var/log/maillog*.gz --outputdir=export --compressed=Y --year=2017 --export-type=TSV
+# python3 PostfixLogParser.py
+#  --inputs=/var/log/maillog*.gz --outputdir=export --compressed=Y --year=2017 --export-type=TSV
 #
 #  inputs      : 解析対象とするログファイルを指定してください
 #  outputdir   : 指定したディレクトリに、解析結果が元ファイルの名称に「.txt」付与されて保存されます。
@@ -21,7 +22,6 @@
 import re
 import argparse
 import datetime
-import gzip
 import glob
 import os
 import logging
@@ -33,7 +33,7 @@ LOGGING_LEVEL = logging.INFO
 # Using cProfile.
 PROFILE_FLAG = False
 # Buffer
-WRITE_BUFFER = 1000
+WRITE_BUFFER = 1000000
 
 
 def remove_char(src, replace):
@@ -83,7 +83,7 @@ class MaillogParser:
         self._compressed = False
         # 解析が終了したレコードの件数
         self._cnt_parse_end = 0
-        self._pop_parsed_line = True
+        self._pop_parsed_line = False  # popしないほうが早い
 
     @property
     def pop_parsed_line(self):
@@ -175,14 +175,13 @@ class MaillogParser:
         メールログを格納するDictionaryオブジェクトの雛形を返します。
         :return: メールログの雛形
         """
-        ml = {"host": "", "proc": [], "queue_id": "", "date_start_date": None,
-              "date_end_date": None, "client_host": "", 'client_ip': "", 'message_id': "",
-              "parse_end": False, "size": 0, "envelope_from": "", "envelope_to": [],
-              "nrcpt": 0, "orig_to": [], "dsn": [], "status": [],
-              "delay": 0.0, "delay_before_qmanager": 0.0, "delay_qmanager": 0.0,
-              "delay_con_setup": 0.0, "delay_msg_trans": 0.0, "relay_host": [],
-              "relay_ip": [], "relay_port": [], "smtp_message": []}
-        return ml
+        return {"host": "", "proc": [], "queue_id": "", "date_start_date": None,
+                "date_end_date": None, "client_host": "", 'client_ip': "", 'message_id': "",
+                "parse_end": False, "size": 0, "envelope_from": "", "envelope_to": [],
+                "nrcpt": 0, "orig_to": [], "dsn": [], "status": [],
+                "delay": 0.0, "delay_before_qmanager": 0.0, "delay_qmanager": 0.0,
+                "delay_con_setup": 0.0, "delay_msg_trans": 0.0, "relay_host": [],
+                "relay_ip": [], "relay_port": [], "smtp_message": []}
 
     @staticmethod
     def _parse_smtpd_line(ml, store):
@@ -198,8 +197,7 @@ class MaillogParser:
         t_ary = store.split('=')
         # client部分の解析
         if len(t_ary) == 2 and t_ary[0] == 'client':
-            buf = t_ary[1]
-            cl = re.search(r'(?P<hostname>[^\[]*)\[(?P<ip>[^\]]*)\]', buf)
+            cl = re.search(r'(?P<hostname>[^\[]*)\[(?P<ip>[^\]]*)\]', t_ary[1])
             if cl:
                 ml["client_host"] = cl.group('hostname')
                 ml["client_ip"] = cl.group('ip')
@@ -257,8 +255,6 @@ class MaillogParser:
                 # nrcpt
                 elif t_ary[0] == 'nrcpt':
                     tmp = t_ary[1].split(' ')
-                    if "nrcpt" not in ml:
-                        ml["nrcpt"] = 0
                     ml["nrcpt"] += int(tmp[0])
             return False
 
@@ -293,14 +289,13 @@ class MaillogParser:
             elif t_ary[0] == 'status':
                 tmp = t_ary[1].split(" ")
                 ml["status"].append(tmp[0])
-                # if tmp[0] != "sent":
-                tmp.pop(0)
-                ml["smtp_message"].append(" ".join(tmp))
+                ml["smtp_message"].append(" ".join(tmp[1:]))
 
             # delay
             elif t_ary[0] == 'delay':
                 try:
                     ml["delay"] += float(t_ary[1])
+
                 except ValueError as ve:
                     logging.warning("delayをfloatに変換できませんでしたが、無視します - {0}".format(ve))
 
@@ -308,12 +303,12 @@ class MaillogParser:
             elif t_ary[0] == 'delays':
                 tmp = t_ary[1].split('/')
                 if len(tmp) == 4:
-                    tmbefore = float(tmp[0])
-                    tm_qmng = float(tmp[1])
-                    tm_setup = float(tmp[2])
-                    tm_trans = float(tmp[3])
-
                     try:
+                        tmbefore = float(tmp[0])
+                        tm_qmng = float(tmp[1])
+                        tm_setup = float(tmp[2])
+                        tm_trans = float(tmp[3])
+
                         if ml["delay_before_qmanager"] < tmbefore:
                             ml["delay_before_qmanager"] = tmbefore
 
@@ -325,6 +320,7 @@ class MaillogParser:
 
                         if ml["delay_msg_trans"] < tm_trans:
                             ml["delay_msg_trans"] = tm_trans
+
                     except ValueError as ve:
                         logging.warning("delaysをfloatに変換できませんでしたが、無視します - {0}".format(ve))
 
@@ -338,8 +334,7 @@ class MaillogParser:
             # relay
             elif t_ary[0] == 'relay':
                 # ホスト名、IPアドレス、ポート番号を取得
-                buf = t_ary[1]
-                rly = re.search(r'(?P<host>[^\[]*)\[(?P<ip>[^\]]*)\]:(?P<port>[0-9]*)', buf)
+                rly = re.search(r'(?P<host>[^\[]*)\[(?P<ip>[^\]]*)\]:(?P<port>[0-9]*)', t_ary[1])
                 if rly:
                     ml["relay_host"].append(rly.group('host'))
                     ml["relay_ip"].append(rly.group('ip'))
@@ -347,7 +342,7 @@ class MaillogParser:
 
                 # 取得できないときはそのまま代入
                 else:
-                    ml["relay_host"].append(buf)
+                    ml["relay_host"].append(t_ary[1])
         return
 
     @staticmethod
@@ -383,15 +378,13 @@ class MaillogParser:
             elif t_ary[0] == 'status':
                 tmp = t_ary[1].split(' ')
                 ml["status"].append(tmp[0])
-
-                # if tmp[0] != "sent":
-                tmp.pop(0)
-                ml["smtp_message"].append(" ".join(tmp))
+                ml["smtp_message"].append(" ".join(tmp[1:]))
 
             # delay
             elif t_ary[0] == 'delay':
                 try:
                     ml["delay"] += float(t_ary[1])
+
                 except ValueError as ve:
                     logging.warning("delayをfloatに変換できませんでしたが、無視します - {0}".format(ve))
 
@@ -399,12 +392,12 @@ class MaillogParser:
             elif t_ary[0] == 'delays':
                 tmp = t_ary[1].split('/')
                 if len(tmp) == 4:
-                    tmbefore = float(tmp[0])
-                    tm_qmng = float(tmp[1])
-                    tm_setup = float(tmp[2])
-                    tm_trans = float(tmp[3])
-
                     try:
+                        tmbefore = float(tmp[0])
+                        tm_qmng = float(tmp[1])
+                        tm_setup = float(tmp[2])
+                        tm_trans = float(tmp[3])
+
                         if ml["delay_before_qmanager"] < tmbefore:
                             ml["delay_before_qmanager"] = tmbefore
 
@@ -416,6 +409,7 @@ class MaillogParser:
 
                         if ml["delay_msg_trans"] < tm_trans:
                             ml["delay_msg_trans"] = tm_trans
+
                     except ValueError as ve:
                         logging.warning("delaysをfloatに変換できませんでしたが、無視します - {0}".format(ve))
 
@@ -424,6 +418,7 @@ class MaillogParser:
                 # <>を取り除く
                 if t_ary[1] != '<>':
                     t_ary[1] = remove_char(t_ary[1], '<>')
+
                 ml["envelope_to"].append(t_ary[1])
 
             # relay
@@ -448,13 +443,13 @@ class MaillogParser:
         :return:
         """
         try:
-            lmonth = self._month.index(s.group('month')) + 1
-            lday = int(s.group('day'))
-            lhour = int(s.group('hour'))
-            lminute = int(s.group('minute'))
-            lsecond = int(s.group('second'))
-            ymdhms = datetime.datetime(self._year, lmonth, lday, lhour, lminute, lsecond)
-            return ymdhms
+            return datetime.datetime(
+                self._year,
+                self._month.index(s.group('month')) + 1,
+                int(s.group('day')),
+                int(s.group('hour')),
+                int(s.group('minute')),
+                int(s.group('second')))
 
         except IndexError as ie:
             raise ValueError("DateParse Error:{0}".format(ie))
@@ -489,6 +484,7 @@ class MaillogParser:
         pat_postfix = re.compile(self.re_line)
         # ファイルを読み取り専用で開く
         if self._compressed:
+            import gzip
             # 圧縮ファイルは圧縮ファイルとして読み取る
             logging.info("圧縮ファイルとして処理を実行します。")
             try:
@@ -503,35 +499,18 @@ class MaillogParser:
             except IOError as ioe:
                 raise IOError("Inputファイルを開けませんでした。{0}".format(ioe))
 
-        cnt = 0
         for row in self._file_object:
             # 行をパースする(date, host, proc, queue_id, message)
             s = pat_postfix.search(row)
             # マッチした場合のみ処理を行う
             if s:
-                # プロセスがPickupだった場合は無視(uidが必要な場合は解析する)
-                if s.group('proc') == 'pickup':
-                    pass
+                proc = s.group('proc')  # groupで何度も直接参照すると遅い
+                # プロセスが smtpd、cleanup、qmgr、smtp, local の場合は下記の処理を実行する
+                if proc == 'smtpd' or proc == 'cleanup' or proc == 'qmgr' or proc == 'smtp' or proc == 'local':
 
-                # プロセスがscacheだった場合は無視
-                # 下記の情報が有用だった場合は追加で解析する
-                # domain lookup hits=x miss=x success=x%
-                # address lookup hits=x miss=x success=x%
-                # max simultaneous domains=x addresses=x connection=x
-                elif s.group('proc') == 'scache':
-                    pass
-
-                elif s.group('proc') == 'anvil':
-                    pass
-
-                elif s.group('proc') == 'trivial-rewrite':
-                    pass
-
-                # プロセスがsmtpd、cleanup、qmgr、smtp, localの場合は下記の処理を実行する
-                else:
                     # 既存の解析済みログに含まれるか確認する
                     qid = s.group('queue_id')
-                    skey = "{0} {1}".format(s.group("host"), qid)
+                    skey = "{0}/{1}".format(s.group("host"), qid)
                     if skey in self._imlogs:
                         ml = self._imlogs[skey]
                     else:
@@ -544,62 +523,76 @@ class MaillogParser:
                     if ml["date_start_date"] is None:
                         ml["date_start_date"] = dt
                         ml["date_end_date"] = dt
-                    elif ml["date_start_date"] > dt:
-                        ml["date_start_date"] = dt
                     elif ml["date_end_date"] < dt:
                         ml["date_end_date"] = dt
+                    elif ml["date_start_date"] > dt:
+                        ml["date_start_date"] = dt
 
                     # プロセス
-                    ml["proc"].append(s.group('proc'))
+                    ml["proc"].append(proc)
 
                     # ホスト名
                     ml["host"] = s.group('host')
 
-                    # メッセージ部分をスペースで分割する
-                    # for store in re.split(r',\s*', s.group('message')):
-
                     # プロセスがsmtpdだった場合の処理
-                    if s.group('proc') == 'smtpd':
-                        # for store in re.split(r',\s*', s.group('message')):
+                    if proc == 'smtpd':
                         for store in s.group('message').split(", "):
                             self._parse_smtpd_line(ml, store)
 
                     # プロセスがcleanupだった場合の処理
-                    elif s.group('proc') == 'cleanup':
-                        # for store in re.split(r',\s*', s.group('message')):
+                    elif proc == 'cleanup':
                         for store in s.group('message').split(", "):
                             self._parse_cleanup_line(ml, store)
 
                     # プロセスがqmgrだった場合の処理
-                    elif s.group('proc') == 'qmgr':
-                        # for store in re.split(r',\s*', s.group('message')):
+                    elif proc == 'qmgr':
                         for store in s.group('message').split(", "):
                             if self._parse_qmgr_line(ml, store):
                                 yield ml
+                                # 不要になった配列を削除する
                                 if self._pop_parsed_line:
                                     self._imlogs.pop(skey)
 
                     # プロセスがsmtpだった場合の処理
-                    elif s.group('proc') == 'smtp':
-                        # for store in re.split(r',\s*', s.group('message')):
+                    elif proc == 'smtp':
                         for store in s.group('message').split(", "):
                             self._parse_smtp_line(ml, store)
 
                     # プロセスがlocalだった場合の処理
-                    elif s.group('proc') == 'local':
-                        # for store in re.split(r',\s*', s.group('message')):
+                    elif proc == 'local':
                         for store in s.group('message').split(", "):
                             self._parse_local_line(ml, store)
+
+                # プロセスがPickupだった場合は無視(uidが必要な場合は解析する)
+                # elif s.group('proc') == 'pickup':
+                # pass
+
+                # プロセスがscacheだった場合は無視
+                # 下記の情報が有用だった場合は追加で解析する
+                # domain lookup hits=x miss=x success=x%
+                # address lookup hits=x miss=x success=x%
+                # max simultaneous domains=x addresses=x connection=x
+                # elif s.group('proc') == 'scache':
+                #    pass
+
+                # elif s.group('proc') == 'anvil':
+                #    pass
+
+                # elif s.group('proc') == 'trivial-rewrite':
+                #    pass
+
+                # else:
+                #    pass
             else:
                 pass
 
-            cnt += 1
         self._file_object.close()
         return
 
     def get_noncomplete_maillog(self):
         for m in self._imlogs.values():
             yield m
+
 
 def arg_parse() -> argparse.Namespace:
     """
@@ -679,7 +672,6 @@ class MaillogWriter:
              "dsn", "status", "size", "client_host", "client_ip", "proc",
              "delay", "delay_before", "delay_qmgr", "delay_con", "delay_trans", "dur"]
 
-
     def __init__(self):
         self._delimiter = ","
         return
@@ -704,7 +696,7 @@ class MaillogWriter:
         raise NotImplementedError()
 
     @abstractmethod
-    def write_line(self, f, m:dict):
+    def write_line(self, f, m: dict):
         print('Abstract')
         raise NotImplementedError()
 
@@ -713,6 +705,7 @@ class MaillogTSVWriter(MaillogWriter):
     def __init__(self):
         super().__init__()
         self._delimiter = "\t"
+        self._replace_char = ""
         self._line_header = ""
         self._line_footer = ""
         return
@@ -720,7 +713,7 @@ class MaillogTSVWriter(MaillogWriter):
     def header(self) -> str:
         return self._delimiter.join(super().cols)
 
-    def write_header(self, f ):
+    def write_header(self, f):
         f.write(self.header())
         f.write("\n")
 
@@ -730,40 +723,42 @@ class MaillogTSVWriter(MaillogWriter):
         :rtype: str
         """
         tmp = []
+        dlm = self._delimiter
+        rep = self._replace_char
         try:
-            tmp.append(str(m["parse_end"]).replace(self._delimiter, ""))
-            tmp.append(m["date_start_date"].isoformat().replace(self._delimiter, ""))
-            tmp.append(m["date_end_date"].isoformat().replace(self._delimiter, ""))
-            tmp.append(m["host"].replace(self._delimiter, ""))
-            tmp.append(m["queue_id"].replace("\t", ""))
-            tmp.append(m["envelope_from"].replace("\t", ""))
-            tmp.append(','.join(m["orig_to"]).replace("\t", ""))
-            tmp.append(','.join(m["envelope_to"]).replace("\t", ""))
-            tmp.append(m["message_id"].replace("\t", ""))
-            tmp.append(str(m["nrcpt"]).replace("\t", ""))
-            tmp.append(','.join(m["relay_host"]).replace("\t", ""))
-            tmp.append(','.join(m["relay_ip"]).replace("\t", ""))
-            tmp.append(','.join(m["relay_port"]).replace("\t", ""))
-            tmp.append(','.join(m["dsn"]).replace("\t", ""))
-            tmp.append(','.join(m["status"]).replace("\t", ""))
-            tmp.append(str(m["size"]).replace("\t", ""))
-            tmp.append(m["client_host"].replace("\t", ""))
-            tmp.append(m["client_ip"].replace("\t", ""))
-            tmp.append(','.join(m["proc"]).replace("\t", ""))
-            tmp.append(str(m["delay"]).replace("\t", ""))
-            tmp.append(str(m["delay_before_qmanager"]).replace("\t", ""))
-            tmp.append(str(m["delay_qmanager"]).replace("\t", ""))
-            tmp.append(str(m["delay_con_setup"]).replace("\t", ""))
-            tmp.append(str(m["delay_msg_trans"]).replace("\t", ""))
-            tmp.append(str(m["date_end_date"] - m["date_start_date"]).replace("\t", ""))
-            tmp.append(','.join(m["smtp_message"]).replace("\t", ""))
+            tmp.append(str(m["parse_end"]))
+            tmp.append(m["date_start_date"].isoformat())
+            tmp.append(m["date_end_date"].isoformat())
+            tmp.append(m["host"].replace(dlm, rep))
+            tmp.append(m["queue_id"].replace(dlm, rep))
+            tmp.append(m["envelope_from"].replace(dlm, rep))
+            tmp.append(','.join(m["orig_to"]).replace(dlm, rep))
+            tmp.append(','.join(m["envelope_to"]).replace(dlm, rep))
+            tmp.append(m["message_id"].replace(dlm, rep))
+            tmp.append(str(m["nrcpt"]))
+            tmp.append(','.join(m["relay_host"]).replace(dlm, rep))
+            tmp.append(','.join(m["relay_ip"]).replace(dlm, rep))
+            tmp.append(','.join(m["relay_port"]).replace(dlm, rep))
+            tmp.append(','.join(m["dsn"]).replace(dlm, rep))
+            tmp.append(','.join(m["status"]).replace(dlm, rep))
+            tmp.append(str(m["size"]).replace(dlm, rep))
+            tmp.append(m["client_host"].replace(dlm, rep))
+            tmp.append(m["client_ip"].replace(dlm, rep))
+            tmp.append(','.join(m["proc"]).replace(dlm, rep))
+            tmp.append(str(m["delay"]))
+            tmp.append(str(m["delay_before_qmanager"]))
+            tmp.append(str(m["delay_qmanager"]))
+            tmp.append(str(m["delay_con_setup"]))
+            tmp.append(str(m["delay_msg_trans"]))
+            tmp.append(str(m["date_end_date"] - m["date_start_date"]))
+            tmp.append(','.join(m["smtp_message"]).replace(dlm, rep))
 
         except TypeError as te:
             raise "TSVWriter.dumps Exception. {0}".format(te)
 
-        return self._delimiter.join(tmp)
+        return dlm.join(tmp)
 
-    def write_line(self, f, m:dict):
+    def write_line(self, f, m: dict):
         f.write(self.dumps(m))
         f.write("\n")
 
@@ -771,7 +766,7 @@ class MaillogTSVWriter(MaillogWriter):
 class MaillogJSONWriter(MaillogWriter):
     def __init__(self):
         super().__init__()
-        self._delimiter = ""
+        dlm = ""
         self._line_header = ""
         self._line_footer = ""
         return
@@ -779,7 +774,7 @@ class MaillogJSONWriter(MaillogWriter):
     def header(self) -> str:
         return ""
 
-    def write_header(self, f ):
+    def write_header(self, f):
         pass
 
     def dumps(self, m: dict) -> str:
@@ -790,7 +785,7 @@ class MaillogJSONWriter(MaillogWriter):
 
         return json.dumps(m, default=support_datetime_default)
 
-    def write_line(self, f, m:dict):
+    def write_line(self, f, m: dict):
         f.write(self.dumps(m))
         f.write("\n")
 
@@ -798,12 +793,14 @@ class MaillogJSONWriter(MaillogWriter):
 class MaillogOrgWriter(MaillogWriter):
     def __init__(self):
         super().__init__()
+        self._delimiter = "\t"
+        self._replace_char = ""
         return
 
     def header(self) -> str:
         return ""
 
-    def write_header(self, f ):
+    def write_header(self, f):
         pass
 
     def dumps(self, m: dict) -> str:
@@ -811,20 +808,44 @@ class MaillogOrgWriter(MaillogWriter):
               "msgid={8}\tnrcpt={9}\trlyhost={10}\trlyip={11}\trlyprt={12}\tdsn={13}\t" \
               "status={14}\tsize={15}\tclhost={16}\tclip={17}\tporc={18}\tdelay={19}\t" \
               "dlybfr={20}\tdlyqmgr={21}\tdlycon={22}\tdlytrns={23}\tdur={24}\tmsg={25}"
-        buf = fmt.format(
-            str(m["parse_end"]), m["date_start_date"].isoformat(), m["date_end_date"].isoformat(), m["host"],
-            m["queue_id"], m["envelope_from"], ','.join(m["orig_to"]),
-            ','.join(m["envelope_to"]), m["message_id"], str(m["nrcpt"]),
-            ','.join(m["relay_host"]), ','.join(m["relay_ip"]), ','.join(m["relay_port"]),
-            ','.join(m["dsn"]), ','.join(m["status"]), str(m["size"]), m["client_host"], m["client_ip"],
-            ','.join(m["proc"]), str(m["delay"]), str(m["delay_before_qmanager"]), str(m["delay_qmanager"]),
-            str(m["delay_con_setup"]), str(m["delay_msg_trans"]), str(m["date_end_date"] - m["date_start_date"]),
-            ','.join(m["smtp_message"])
-        )
+        try:
+            dlm = self._delimiter
+            rep = self._replace_char
+            buf = fmt.format(
+                str(m["parse_end"]),
+                m["date_start_date"].isoformat(),
+                m["date_end_date"].isoformat(),
+                m["host"].replace(dlm, rep),
+                m["queue_id"].replace(dlm, rep),
+                m["envelope_from"].replace(dlm, rep),
+                ','.join(m["orig_to"]).replace(dlm, rep),
+                ','.join(m["envelope_to"]).replace(dlm, rep),
+                m["message_id"].replace(dlm, rep),
+                str(m["nrcpt"]),
+                ','.join(m["relay_host"]).replace(dlm, rep),
+                ','.join(m["relay_ip"]).replace(dlm, rep),
+                ','.join(m["relay_port"]).replace(dlm, rep),
+                ','.join(m["dsn"]).replace(dlm, rep),
+                ','.join(m["status"]).replace(dlm, rep),
+                str(m["size"]).replace(dlm, rep),
+                m["client_host"].replace(dlm, rep),
+                m["client_ip"].replace(dlm, rep),
+                ','.join(m["proc"]).replace(dlm, rep),
+                str(m["delay"]),
+                str(m["delay_before_qmanager"]),
+                str(m["delay_qmanager"]),
+                str(m["delay_con_setup"]),
+                str(m["delay_msg_trans"]),
+                str(m["date_end_date"] - m["date_start_date"]),
+                ','.join(m["smtp_message"]).replace(dlm, rep)
+            )
+
+        except TypeError as te:
+            raise "MaillogOrgWriter.dumps Exception. {0}".format(te)
 
         return buf
 
-    def write_line(self, f, m:dict):
+    def write_line(self, f, m: dict):
         f.write(self.dumps(m))
         f.write("\n")
 
@@ -892,7 +913,7 @@ def main():
             # パースの実行
             basename, ext = os.path.splitext(os.path.basename(input_fn))
             output_fn = "{0}/{1}{2}.txt".format(args.outputdir, basename, ext)
-            with open(output_fn, 'w+')as f:
+            with open(output_fn, 'w+', buffering=WRITE_BUFFER)as f:
                 mtw = create_writer(args.type)
 
                 # ヘッダ書処理
@@ -926,7 +947,7 @@ def main():
     logging.info('=Parse end.=== {0}'.format(etime - stime))
 
 
-def support_datetime_default(obj):
+def support_datetime_default(obj) -> str:
     """
     json.dumpsでdatetimeオブジェクトを扱うためのコールバック
     :param obj: datetime.datetime
