@@ -750,7 +750,7 @@ class MaillogTSVWriter(MaillogWriter):
             tmp.append(','.join(m["relay_port"]).replace(dlm, rep))
             tmp.append(','.join(m["dsn"]).replace(dlm, rep))
             tmp.append(','.join(m["status"]).replace(dlm, rep))
-            tmp.append(str(m["size"]).replace(dlm, rep))
+            tmp.append(str(m["size"]))
             tmp.append(m["client_host"].replace(dlm, rep))
             tmp.append(m["client_ip"].replace(dlm, rep))
             tmp.append(','.join(m["proc"]).replace(dlm, rep))
@@ -836,7 +836,7 @@ class MaillogOrgWriter(MaillogWriter):
                 ','.join(m["relay_port"]).replace(dlm, rep),
                 ','.join(m["dsn"]).replace(dlm, rep),
                 ','.join(m["status"]).replace(dlm, rep),
-                str(m["size"]).replace(dlm, rep),
+                str(m["size"]),
                 m["client_host"].replace(dlm, rep),
                 m["client_ip"].replace(dlm, rep),
                 ','.join(m["proc"]).replace(dlm, rep),
