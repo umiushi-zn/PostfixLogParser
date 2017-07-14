@@ -243,7 +243,11 @@ class MaillogParser:
             if len(t_ary) == 2:
                 # size
                 if t_ary[0] == 'size':
-                    ml["size"] = t_ary[1]
+                    try:
+                        ml["size"] += int(t_ary[1])
+
+                    except ValueError as ve:
+                        logging.warning("size をintに変換できませんでしたが、無視します - {0}".format(ve))
 
                 # from
                 elif t_ary[0] == 'from':
@@ -255,7 +259,12 @@ class MaillogParser:
                 # nrcpt
                 elif t_ary[0] == 'nrcpt':
                     tmp = t_ary[1].split(' ')
-                    ml["nrcpt"] += int(tmp[0])
+                    try:
+                        ml["nrcpt"] += int(tmp[0])
+
+                    except ValueError as ve:
+                        logging.warning("nrcpt をintに変換できませんでしたが、無視します - {0}".format(ve))
+
             return False
 
     @staticmethod
