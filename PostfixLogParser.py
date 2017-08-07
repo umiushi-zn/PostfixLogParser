@@ -7,6 +7,10 @@
 # Postfixのログを1行1ログに変換します。
 # 手元の環境では18万行(15000レコードくらい)を約7秒で解析します。
 #
+# 依存
+# pip install python-geoip
+# pip install python-geoip-geolite2
+#
 # python3 PostfixLogParser.py
 #  --inputs=/var/log/maillog*.gz --outputdir=export --compressed=Y --year=2017 --export-type=TSV
 #
@@ -572,26 +576,26 @@ class MaillogParser:
                         for store in s.group('message').split(", "):
                             self._parse_local_line(ml, store)
 
-                # プロセスがPickupだった場合は無視(uidが必要な場合は解析する)
-                # elif s.group('proc') == 'pickup':
-                # pass
+                            # プロセスがPickupだった場合は無視(uidが必要な場合は解析する)
+                            # elif s.group('proc') == 'pickup':
+                            # pass
 
-                # プロセスがscacheだった場合は無視
-                # 下記の情報が有用だった場合は追加で解析する
-                # domain lookup hits=x miss=x success=x%
-                # address lookup hits=x miss=x success=x%
-                # max simultaneous domains=x addresses=x connection=x
-                # elif s.group('proc') == 'scache':
-                #    pass
+                            # プロセスがscacheだった場合は無視
+                            # 下記の情報が有用だった場合は追加で解析する
+                            # domain lookup hits=x miss=x success=x%
+                            # address lookup hits=x miss=x success=x%
+                            # max simultaneous domains=x addresses=x connection=x
+                            # elif s.group('proc') == 'scache':
+                            #    pass
 
-                # elif s.group('proc') == 'anvil':
-                #    pass
+                            # elif s.group('proc') == 'anvil':
+                            #    pass
 
-                # elif s.group('proc') == 'trivial-rewrite':
-                #    pass
+                            # elif s.group('proc') == 'trivial-rewrite':
+                            #    pass
 
-                # else:
-                #    pass
+                            # else:
+                            #    pass
             else:
                 pass
 
@@ -630,8 +634,8 @@ def arg_parse() -> argparse.Namespace:
 
     # 出力先ディレクトリ
     p.add_argument(
-        '--outputdir',
-        help='出力先のディレクトリの指定',
+        '--output',
+        help='出力先のディレクトリの指定もしくはデータベースとのコネクション文字列を指定',
         required=True
     )
 
@@ -655,9 +659,9 @@ def arg_parse() -> argparse.Namespace:
     p.add_argument(
         '--export-type',
         dest='type',
-        help='出力ファイルのフォーマット(TSV,JSON,ORIG)',
+        help='出力ファイルのフォーマット(TSV,JSON,ORIG,ELS)',
         default='ORIG',
-        choices=['TSV', 'JSON', 'ORIG']
+        choices=['TSV', 'JSON', 'ORIG', 'ELS']
     )
 
     args = p.parse_args()
@@ -665,7 +669,7 @@ def arg_parse() -> argparse.Namespace:
     # 標準出力
     logging.info('=ArgParse===')
     logging.info(" Input files : {0}".format(args.inputs))
-    logging.info(" Output dir  : {0}".format(args.outputdir))
+    logging.info(" Output      : {0}".format(args.output))
     logging.info(" Compressed  : {0}".format(args.compressed))
     logging.info(" Yaer        : {0}".format(args.year))
     logging.info(" Export Type : {0}".format(args.type))
@@ -682,30 +686,30 @@ class MaillogWriter:
              "delay", "delay_before", "delay_qmgr", "delay_con", "delay_trans", "dur"]
 
     def __init__(self):
-        self._delimiter = ","
-        return
+        self._connection_string = ""
 
     @property
-    def cols(self):
-        return self._cols
+    def connection_string(self):
+        return self._connection_string
+
+    @connection_string.setter
+    def connection_string(self, value):
+        if isinstance(value, str):
+            self._connection_string = value
+        pass
 
     @abstractmethod
-    def header(self):
+    def connect(self):
         print('Abstract')
         raise NotImplementedError()
 
     @abstractmethod
-    def dumps(self, m: dict):
+    def insert(self, m: dict):
         print('Abstract')
         raise NotImplementedError()
 
     @abstractmethod
-    def write_header(self, f):
-        print('Abstract')
-        raise NotImplementedError()
-
-    @abstractmethod
-    def write_line(self, f, m: dict):
+    def disconnect(self):
         print('Abstract')
         raise NotImplementedError()
 
@@ -717,16 +721,32 @@ class MaillogTSVWriter(MaillogWriter):
         self._replace_char = ""
         self._line_header = ""
         self._line_footer = ""
+        self._connection_string = ""
+        self._fs = None
+        self._header_flg = False
         return
 
-    def header(self) -> str:
-        return self._delimiter.join(super().cols)
+    def connect(self):
+        self._fs = open(self._connection_string, mode='w', buffering=WRITE_BUFFER)
 
-    def write_header(self, f):
-        f.write(self.header())
-        f.write("\n")
+    def insert(self, m: dict):
+        if self._fs:
+            if not self._header_flg:
+                self._write_header()
+                self._header_flg = True
+            self._fs.write(self._dumps(m))
+            self._fs.write("\n")
+        else:
+            raise IOError()
 
-    def dumps(self, m: dict) -> str:
+    def _header(self) -> str:
+        return self._delimiter.join(super()._cols)
+
+    def _write_header(self):
+        self._fs.write(self._header())
+        self._fs.write("\n")
+
+    def _dumps(self, m: dict) -> str:
         """
 
         :rtype: str
@@ -767,26 +787,22 @@ class MaillogTSVWriter(MaillogWriter):
 
         return dlm.join(tmp)
 
-    def write_line(self, f, m: dict):
-        f.write(self.dumps(m))
-        f.write("\n")
+    def disconnect(self):
+        if self._fs:
+            self._fs.close()
+            self._fs = None
 
 
 class MaillogJSONWriter(MaillogWriter):
     def __init__(self):
         super().__init__()
-        dlm = ""
-        self._line_header = ""
-        self._line_footer = ""
+        self._fs = None
         return
 
-    def header(self) -> str:
-        return ""
+    def connect(self):
+        self._fs = open(self._connection_string, mode='w', buffering=WRITE_BUFFER)
 
-    def write_header(self, f):
-        pass
-
-    def dumps(self, m: dict) -> str:
+    def _dumps(self, m: dict) -> str:
         """
 
         :rtype: str
@@ -794,25 +810,88 @@ class MaillogJSONWriter(MaillogWriter):
 
         return json.dumps(m, default=support_datetime_default)
 
-    def write_line(self, f, m: dict):
-        f.write(self.dumps(m))
-        f.write("\n")
+    def insert(self, m: dict):
+        self._fs.write(self._dumps(m))
+        self._fs.write("\n")
+
+    def disconnect(self):
+        if self._fs:
+            self._fs.close()
+            self._fs = None
+
+
+class MaillogElsWriter(MaillogWriter):
+    def __init__(self):
+        super().__init__()
+        self._index = "postfix"
+        self._type = "postfix_log"
+        self._host = "127.0.0.1"
+        self._port = "9200"
+        self._es = None
+
+    @property
+    def connection_string(self):
+        return self._connection_string
+
+    @connection_string.setter
+    def connection_string(self, value):
+        """
+        :param value:
+         eg)
+          "index=postfix type=postfix_log host=databasehost port=9200"
+        :return:
+        """
+        if isinstance(value, str):
+            for s in value.split():
+                ary = s.split("=")
+                if len(ary) == 2:
+                    if ary[0] == "index":
+                        self._index = ary[1]
+                    elif ary[0] == "type":
+                        self._type = ary[1]
+                    elif ary[0] == "host":
+                        self._host = ary[1]
+                    elif ary[0] == "port":
+                        self._port = ary[1]
+
+    def connect(self):
+        from elasticsearch import Elasticsearch
+        self._es = Elasticsearch("{0}:{1}".format(self._host, self._port))
+
+    def _dumps(self, m: dict) -> str:
+        """
+
+        :rtype: str
+        """
+
+        return json.dumps(m, default=support_datetime_default)
+
+    def insert(self, m: dict):
+        if self._es:
+            self._es.index(index=self._index, doc_type=self._type, body=self._dumps(m))
+        else:
+            raise IOError()
+
+    def disconnect(self):
+        self._es = None
 
 
 class MaillogOrgWriter(MaillogWriter):
     def __init__(self):
         super().__init__()
+        self._fs = None
         self._delimiter = "\t"
         self._replace_char = ""
         return
 
-    def header(self) -> str:
-        return ""
+    def connect(self):
+        self._fs = open(self._connection_string, mode='w', buffering=WRITE_BUFFER)
 
-    def write_header(self, f):
-        pass
+    def _dumps(self, m: dict) -> str:
+        """
 
-    def dumps(self, m: dict) -> str:
+        :rtype: str
+        """
         fmt = "anlyzd={0}\tstart={1}\tend={2}\thost={3}\tqid={4}\tfrom={5}\torg_to={6}\tto={7}\t" \
               "msgid={8}\tnrcpt={9}\trlyhost={10}\trlyip={11}\trlyprt={12}\tdsn={13}\t" \
               "status={14}\tsize={15}\tclhost={16}\tclip={17}\tporc={18}\tdelay={19}\t" \
@@ -854,23 +933,45 @@ class MaillogOrgWriter(MaillogWriter):
 
         return buf
 
-    def write_line(self, f, m: dict):
-        f.write(self.dumps(m))
-        f.write("\n")
+    def insert(self, m: dict):
+        self._fs.write(self._dumps(m))
+        self._fs.write("\n")
+
+    def disconnect(self):
+        if self._fs:
+            self._fs.close()
+            self._fs = None
 
 
-def create_writer(txt):
+def create_writer(txt: str, input_fn: str, output: str):
     """
     出力オブジェクトの生成
+    :param input_fn:
     :param txt: JSON / TSV / ORIG
     :return: MaillogWriterを継承したオブジェクト
     """
+    basename, ext = os.path.splitext(os.path.basename(input_fn))
+    output_fn = "{0}/{1}{2}.txt".format(output, basename, ext)
+
     if txt == 'JSON':
-        return MaillogJSONWriter()
+        mtw = MaillogJSONWriter()
+        mtw.connection_string = output_fn
+        return mtw
+
     elif txt == 'TSV':
-        return MaillogTSVWriter()
+        mtw = MaillogTSVWriter()
+        mtw.connection_string = output_fn
+        return mtw
+
+    elif txt == 'ELS':
+        mtw = MaillogElsWriter()
+        mtw.connection_string = output
+        return mtw
+
     else:
-        return MaillogOrgWriter()
+        mtw = MaillogOrgWriter()
+        mtw.connection_string = output_fn
+        return mtw
 
 
 def main():
@@ -919,23 +1020,18 @@ def main():
             ps = datetime.datetime.now()
             logging.info("Start analysis.")
 
-            # パースの実行
-            basename, ext = os.path.splitext(os.path.basename(input_fn))
-            output_fn = "{0}/{1}{2}.txt".format(args.outputdir, basename, ext)
-            with open(output_fn, 'w+', buffering=WRITE_BUFFER)as f:
-                mtw = create_writer(args.type)
+            # Writerの作成
+            mtw = create_writer(args.type, input_fn, args.output)
+            mtw.connect()
 
-                # ヘッダ書処理
-                mtw.write_header(f)
+            # 解析が終わったログを書き込み
+            for imlog in mp.parse():
+                logging.debug(imlog)
+                mtw.insert(imlog)
 
-                # 解析が終わったログを書き込み
-                for imlog in mp.parse():
-                    logging.debug(imlog)
-                    mtw.write_line(f, imlog)
-
-                # 解析が終わっていないログを書き込み
-                for imlog in mp.get_noncomplete_maillog():
-                    mtw.write_line(f, imlog)
+            # 解析が終わっていないログを書き込み
+            for imlog in mp.get_noncomplete_maillog():
+                mtw.insert(imlog)
 
             # 標準出力
             pe = datetime.datetime.now()
@@ -950,6 +1046,9 @@ def main():
         except ValueError as ve:
             # 日付が間違っている場合は処理を続行しない
             logging.error("日時に誤りがあります。当該ログの処理を中断します。{0}".format(ve))
+
+        finally:
+            mtw.disconnect()
 
     # 標準出力
     etime = datetime.datetime.now()
