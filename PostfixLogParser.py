@@ -19,10 +19,12 @@
 #                ディレクトリは予め作成しておいてください。
 #  year        : ログには年号が記録されていないため年号(西暦)を数字で入れてください
 #  compressed  : ファイルが圧縮(gzip)されている場合に指定してください。
-#  export-type : TSV or JSON or ORIG
+#  export-type : TSV or JSON or ORIG or ELS or ELSwG
 #                TSVはカラムの区切りをTabで出力します。
 #                JSONは行ごとにJSON形式で出力されます。
 #                ORIGはgrepし易いような形式で出力します。
+#                ELSはElasticsearchへ直接出力します。
+#                ELSwGはElasticsearchへ直接出力し国名を付与します。
 import re
 import argparse
 import datetime
@@ -604,7 +606,8 @@ class MaillogParser:
 
     def get_noncomplete_maillog(self):
         for m in self._imlogs.values():
-            yield m
+            if m["parse_end"] == False:
+                yield m
 
 
 def arg_parse() -> argparse.Namespace:
@@ -659,9 +662,9 @@ def arg_parse() -> argparse.Namespace:
     p.add_argument(
         '--export-type',
         dest='type',
-        help='出力ファイルのフォーマット(TSV,JSON,ORIG,ELS)',
+        help='出力ファイルのフォーマット(TSV,JSON,ORIG,ELS,ELSwG)',
         default='ORIG',
-        choices=['TSV', 'JSON', 'ORIG', 'ELS']
+        choices=['TSV', 'JSON', 'ORIG', 'ELS', 'ELSwG']
     )
 
     args = p.parse_args()
@@ -876,6 +879,80 @@ class MaillogElsWriter(MaillogWriter):
         self._es = None
 
 
+class MaillogElsWithGeoWriter(MaillogWriter):
+    def __init__(self):
+        super().__init__()
+        self._index = "postfix"
+        self._type = "postfix_log"
+        self._host = "127.0.0.1"
+        self._port = "9200"
+        self._es = None
+        import geoip2.database as geodb
+        self._giocity = geodb.Reader('GeoLite2-City.mmdb')
+
+    @property
+    def connection_string(self):
+        return self._connection_string
+
+    @connection_string.setter
+    def connection_string(self, value):
+        """
+        :param value:
+         eg)
+          "index=postfix type=postfix_log host=databasehost port=9200"
+        :return:
+        """
+        if isinstance(value, str):
+            for s in value.split():
+                ary = s.split("=")
+                if len(ary) == 2:
+                    if ary[0] == "index":
+                        self._index = ary[1]
+                    elif ary[0] == "type":
+                        self._type = ary[1]
+                    elif ary[0] == "host":
+                        self._host = ary[1]
+                    elif ary[0] == "port":
+                        self._port = ary[1]
+
+    def connect(self):
+        from elasticsearch import Elasticsearch
+        self._es = Elasticsearch("{0}:{1}".format(self._host, self._port))
+
+    def _dumps(self, m: dict) -> str:
+        """
+
+        :rtype: str
+        """
+        # client_ipから国名を取得
+        try:
+            rec= self._giocity.city(m["client_ip"])
+            if rec:
+                m["client_gio"] = rec.country.name
+        except:
+            m["client_gio"] = ""
+
+        # relay_ipから国名を取得
+        m["relay_gio"] = []
+        for t in m["relay_ip"]:
+            try:
+                rec = self._giocity.city(t)
+                if rec:
+                    m["relay_gio"].append(rec.country.name)
+            except:
+                continue
+
+        return json.dumps(m, default=support_datetime_default)
+
+    def insert(self, m: dict):
+        if self._es:
+            self._es.index(index=self._index, doc_type=self._type, body=self._dumps(m))
+        else:
+            raise IOError()
+
+    def disconnect(self):
+        self._es = None
+
 class MaillogOrgWriter(MaillogWriter):
     def __init__(self):
         super().__init__()
@@ -965,6 +1042,11 @@ def create_writer(txt: str, input_fn: str, output: str):
 
     elif txt == 'ELS':
         mtw = MaillogElsWriter()
+        mtw.connection_string = output
+        return mtw
+
+    elif txt == 'ELSwG':
+        mtw = MaillogElsWithGeoWriter()
         mtw.connection_string = output
         return mtw
 
