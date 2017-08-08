@@ -1,16 +1,22 @@
 # -*- coding: utf-8 -*-
-# for Python 3.4
+# for Python 3.4, 3.5
 # PostfixLogParser
 # Version : 0.0.5a
 # License : GPLv3
 # (c) umiushi.zn@gmail.com
+#
+# ●概要
 # Postfixのログを1行1ログに変換します。
-# 手元の環境では18万行(15000レコードくらい)を約7秒で解析します。
 #
-# 依存
-# pip install python-geoip
-# pip install python-geoip-geolite2
+# ●依存
+# Elasticsearchを使用する場合は下記のインストールが必要
+# 　pip install elasticsearch
+# 更に国名を使用する場合は下記のインストールとデータベースへのパスを設定する必要がある。
+# 　pip install geoip2
+# 　GeoLite2-City.mmdbは下記のURLからダウンロードしてカレントディレクトリに配置してください。
+# 　https://dev.maxmind.com/ja/geolite2/
 #
+# ●使い方
 # python3 PostfixLogParser.py
 #  --inputs=/var/log/maillog*.gz --outputdir=export --compressed=Y --year=2017 --export-type=TSV
 #
@@ -40,7 +46,8 @@ LOGGING_LEVEL = logging.INFO
 PROFILE_FLAG = False
 # Buffer
 WRITE_BUFFER = 1000000
-
+# GEOIP2 city database
+GEOIP2_CITY_DATABASE="GeoLite2-City.mmdb"
 
 def remove_char(src, replace):
     """
@@ -682,6 +689,9 @@ def arg_parse() -> argparse.Namespace:
 
 
 class MaillogWriter:
+    """
+    ログを書き込む抽象クラスです。
+    """
     __metaclass__ = ABCMeta
     _cols = ["analyzed", "start", "end", "host", "qid", "from", "org_to", "to",
              "msg_id", "nrcpt", "relay_host", "relay_ip", "relay_port",
@@ -866,7 +876,6 @@ class MaillogElsWriter(MaillogWriter):
 
         :rtype: str
         """
-
         return json.dumps(m, default=support_datetime_default)
 
     def insert(self, m: dict):
@@ -887,8 +896,9 @@ class MaillogElsWithGeoWriter(MaillogWriter):
         self._host = "127.0.0.1"
         self._port = "9200"
         self._es = None
+
         import geoip2.database as geodb
-        self._giocity = geodb.Reader('GeoLite2-City.mmdb')
+        self._giocity = geodb.Reader(GEOIP2_CITY_DATABASE)
 
     @property
     def connection_string(self):
@@ -1031,26 +1041,31 @@ def create_writer(txt: str, input_fn: str, output: str):
     output_fn = "{0}/{1}{2}.txt".format(output, basename, ext)
 
     if txt == 'JSON':
+        # 1行 1JSON で書き込みます。
         mtw = MaillogJSONWriter()
         mtw.connection_string = output_fn
         return mtw
 
     elif txt == 'TSV':
+        # Tab区切りのテキストで書き込みます。
         mtw = MaillogTSVWriter()
         mtw.connection_string = output_fn
         return mtw
 
     elif txt == 'ELS':
+        # Elasticsearchに書き込みます。
         mtw = MaillogElsWriter()
         mtw.connection_string = output
         return mtw
 
     elif txt == 'ELSwG':
+        # Elasticsearch に 国名を付与して書き込みます。
         mtw = MaillogElsWithGeoWriter()
         mtw.connection_string = output
         return mtw
 
     else:
+        # grepし易い形式で書き込みます。
         mtw = MaillogOrgWriter()
         mtw.connection_string = output_fn
         return mtw
@@ -1146,6 +1161,8 @@ def support_datetime_default(obj) -> str:
     if isinstance(obj, datetime.datetime):
         return obj.isoformat()
     raise TypeError(repr(obj) + " is not JSON serializable")
+
+
 
 
 if __name__ == '__main__':
